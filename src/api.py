@@ -1,10 +1,8 @@
 """
-api.py — Data source: fetch blog posts from a REST API.
+api.py — API Interaction Module
 
-Primary endpoint: JSONPlaceholder
-Fallback endpoint: DummyJSON
-
-Returns JSON arrays of post objects: { "id": int, "title": str, "body": str }
+Fetches dummy blog post data from external REST APIs,
+with automatic fallback if the primary service fails.
 """
 
 import requests

@@ -1,14 +1,9 @@
 """
-grounding.py — ScreenSeekeR visual grounding engine.
+grounding.py — ScreenSeekeR Visual Grounding Engine
 
 Implements the recursive search algorithm from arXiv:2504.07981 (ScreenSeekeR).
-
-Pipeline:
-1. PLANNER: VLM identifies up to 3 candidate screen regions.
-2. GROUNDER: VLM predicts precise click-point coordinates for each region.
-3. SCORING: Ranks candidates using Gaussian centrality.
-4. NMS: Non-Maximum Suppression removes overlapping candidates.
-5. RECURSE: Zooms into the top-ranked candidate and repeats until patch is small enough.
+This includes Planner/Grounder architecture, Box Dilation, Gaussian Centrality Scoring,
+and Non-Maximum Suppression to bypass visual obstructions.
 """
 
 import os
@@ -32,7 +27,7 @@ SIGMA     = 0.3                        # Gaussian width
 MAX_VLM   = 1024                       # downscale longest side before sending to API
 DILATE_PX = 100                        # official dilation to prevent edge-cutoff
 TEMP_DIR  = "temp"                     # folder for intermediate debug images
-SAVE_DEBUG = True                     # set True to save intermediate images to temp/
+SAVE_DEBUG = True                      # set True to save intermediate images to temp/
 
 # ─── Prompts ───────────────────────────────────────────────────────────────────
 PLANNER_PROMPT = """\
@@ -307,7 +302,6 @@ def locate_icon(
     logger.info(f"✓ Located '{target}' at ({x}, {y}) with confidence {conf:.2f}.")
 
     if save_annotated_path:
-        # ── Annotate the final result for the deliverables ─────────────────────
         draw = ImageDraw.Draw(screenshot)
         r = 25
         # Draw red crosshair
@@ -323,16 +317,15 @@ def locate_icon(
         # Draw text with a black outline for high visibility
         text = f"Conf: {conf:.2f}"
         
-        # Calculate text size to perfectly center it above the crosshair
         try:
             bbox = draw.textbbox((0, 0), text, font=font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
         except AttributeError:
-            text_w, text_h = 120, 30  # Fallback for very old Pillow versions
+            text_w, text_h = 120, 30
             
         text_x = x - (text_w / 2)
-        text_y = y - r - text_h - 15  # 15px padding above the crosshair
+        text_y = y - r - text_h - 15
 
         for adj in [(-2, -2), (2, -2), (-2, 2), (2, 2)]:
             draw.text((text_x + adj[0], text_y + adj[1]), text, fill="black", font=font)

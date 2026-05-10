@@ -1,13 +1,7 @@
 """
-main.py — Entry point for Vision-Based Desktop Automation.
+main.py — Entry Point
 
-Workflow:
-1. Fetch the first 10 blog posts from JSONPlaceholder.
-2. Minimize all windows to clear the desktop.
-3. For each post:
-    a. Locate the Notepad icon via AI or pixel cache.
-    b. Launch Notepad, type content, save, and close.
-4. Report final success rate.
+The central orchestrator connecting the API, Vision AI, and UI automation.
 """
 
 import os

@@ -1,49 +1,46 @@
 # Vision-Based Desktop Automation
 
-A robust desktop automation engine for Windows that utilizes Vision-Language Models (VLM) for dynamic UI grounding. It locates application icons visually, eliminating the need for hardcoded coordinates.
+A desktop automation script for Windows that uses a Vision-Language Model (VLM) to visually locate and interact with desktop icons.
 
-This project implements the core methodologies outlined in the **ScreenSeekeR** paper (arXiv:2504.07981) to achieve production-grade accuracy and speed.
+## Features
 
-## 🚀 Features
+- **ScreenSeekeR Grounding Engine**: Implements the official recursive architecture from arXiv:2504.07981. Uses a Planner/Grounder workflow, Box Dilation, and Gaussian Centrality scoring to bypass popups and dynamically locate icons without hardcoded coordinates.
+- **Pixel Caching**: Speeds up automation by skipping the complex AI check if the icon hasn't moved between automation loops.
+- **API Integration**: Fetches dummy data to process during the automation loop.
+- **Robustness**: Includes automatic retries, threading, Non-Maximum Suppression (NMS), and an emergency kill switch (`Esc` key).
 
-- **Dynamic Grounding**: Implements a Cascaded Visual Search with a dual Planner/Grounder LLM architecture.
-- **ScreenSeekeR Compliance**: Utilizes Box Dilation, Non-Maximum Suppression (NMS), and Gaussian Centrality Scoring for pixel-perfect precision.
-- **Smart Pixel Caching**: Bypasses AI inference if the target icon hasn't moved, ensuring near-instant execution for repetitive tasks.
-- **Resilient Workflow**: Automatically fetches data from APIs (with failover handling) and processes it into local text files.
-- **Fail-Safe Mechanisms**: Includes an instant "Kill Switch" (`Esc` key) and automated retry logic for robust desktop management.
+## Setup
 
-## 🛠️ Setup
-
-1. **Prerequisites**: Windows 10/11, Python 3.10+, and `uv` package manager.
-2. **Environment**: Create a `.env` file and add your Google Gemini API Key:
-   ```env
-   GOOGLE_API_KEY=your_api_key_here
-   ```
-3. **Install Dependencies**:
+1. Install requirements (requires Python 3.10+):
    ```powershell
    uv sync
    ```
 
-## 💻 Usage
+2. Add your Google Gemini API key to a `.env` file:
+   ```env
+   GOOGLE_API_KEY=your_api_key_here
+   ```
 
-### Main Automation
-Runs the full workflow: clears the desktop, fetches posts, visually locates Notepad, types content, and saves files to an output directory.
+3. Ensure there is a visible "Notepad" shortcut on your desktop.
+
+## Usage
+
+### Main Automation Loop
+Fetches dummy posts, uses the ScreenSeekeR algorithm to locate Notepad, types the content, saves the files, and closes the window.
 ```powershell
 uv run python src/main.py
 ```
 
-### Scenario Testing
-Validates the grounding engine by generating annotated screenshots for evaluation.
+### Diagnostic Testing
+Generates annotated screenshots to verify that the ScreenSeekeR AI can accurately locate the target icon, bypassing visual obstructions.
 ```powershell
 uv run python generate_screenshots.py
 ```
 
-## 📂 Project Structure
+## Project Structure
 
-- `src/main.py`: Main orchestration and desktop management.
-- `src/grounding.py`: The visual search engine (ScreenSeekeR Implementation).
-- `src/automation.py`: Keyboard/mouse interaction, pixel-caching, and app launching.
-- `src/api.py`: Data fetching with automatic failovers.
-- `src/utils.py`: Logging and execution retry utilities.
-- `temp/`: Directory where intermediate visual crops are saved (if `SAVE_DEBUG` is enabled).
-- `debugging/`: Directory for annotated grounding reports.
+- `src/main.py`: Main entry point and automation loop.
+- `src/grounding.py`: The ScreenSeekeR Visual Engine (Planner, Grounder, Recursive Search).
+- `src/automation.py`: Controls the mouse and keyboard actions.
+- `src/api.py`: Fetches data from external REST APIs.
+- `src/utils.py`: Shared logging and retry utilities.

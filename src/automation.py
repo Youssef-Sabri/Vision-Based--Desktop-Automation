@@ -1,10 +1,8 @@
 """
-automation.py — Desktop automation workflow.
+automation.py — Desktop Automation Module
 
-Handles the UI interaction for:
-1. Locating and launching Notepad via AI grounding
-2. Typing content and saving the file
-3. Gracefully closing the application
+Controls the physical mouse and keyboard to interact with the OS.
+Handles app launching, typing, saving, and window management.
 """
 
 import os
@@ -103,7 +101,7 @@ def launch_notepad() -> gw.Window:
     pyautogui.doubleClick()
 
     # Wait for window to open
-    deadline = time.time() + 8
+    deadline = time.time() + 4
     while time.time() < deadline:
         for win in gw.getWindowsWithTitle("Notepad"):
             if win.visible:
@@ -113,7 +111,7 @@ def launch_notepad() -> gw.Window:
                 return win
         time.sleep(0.05)
 
-    raise AutomationError("Notepad did not open within 8 s.")
+    raise AutomationError("Notepad did not open within 4 s.")
 
 
 def write_and_save(

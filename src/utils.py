@@ -1,5 +1,7 @@
 """
-utils.py — Shared utilities for logging and execution retry handling.
+utils.py — Shared Utilities
+
+Provides common functions for environment loading, logging, and retry logic.
 """
 
 import logging

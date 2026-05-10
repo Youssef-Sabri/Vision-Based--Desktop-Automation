@@ -1,3 +1,9 @@
+"""
+generate_screenshots.py — Diagnostic Tool
+
+Used to verify that the AI can accurately locate the target icon on the screen.
+"""
+
 import os
 import sys
 import time
@@ -26,7 +32,7 @@ def capture_scenario(name: str):
         pyautogui.hotkey("win", "d")
         time.sleep(1.5)
 
-        logger.info("Taking screenshot and running ScreenSeekeR AI...")
+        logger.info("Taking screenshot and running Vision AI...")
         screenshot = ImageGrab.grab(all_screens=False)
         
         try:
@@ -36,7 +42,7 @@ def capture_scenario(name: str):
             x, y = locate_icon(TARGET, screenshot, save_annotated_path=dest)
             
             logger.info(f"✅ Success! Found at ({x}, {y})")
-            logger.info(f"📸 Saved deliverable to: {dest}")
+            logger.info(f"📸 Saved diagnostic screenshot to: {dest}")
 
             # Restore windows
             pyautogui.hotkey("win", "d")
@@ -56,7 +62,7 @@ def capture_scenario(name: str):
                 break
 
 if __name__ == "__main__":
-    logger.info("=== Deliverable Screenshot Generator ===")
+    logger.info("=== Diagnostic Screenshot Generator ===")
     os.makedirs("debugging", exist_ok=True)
     
     capture_scenario("Top Left")
