@@ -140,13 +140,21 @@ def _call_planner(
     response = client.models.generate_content(
         model=MODEL, contents=[prompt, small], config={"temperature": 0.0},
     )
-    # Parse <area x1="..." y1="..." x2="..." y2="..."> tags
-    pattern = r'<area\s+x1="(\d+)[",]\s*y1="(\d+)[",]\s*x2="(\d+)[",]\s*y2="(\d+)[",>]'
+    raw = response.text
+
+    # Parse <area> tags — tolerates any attribute order or quote style
     regions = []
-    for m in re.finditer(pattern, response.text):
-        x1, y1, x2, y2 = map(int, m.groups())
-        if x2 > x1 and y2 > y1:
-            regions.append((x1, y1, x2, y2))
+    for tag in re.findall(r'<area[^>]+>', raw, re.IGNORECASE):
+        coords = {}
+        for attr in ("x1", "y1", "x2", "y2"):
+            m = re.search(rf'{attr}=["\']?(\d+)', tag, re.IGNORECASE)
+            if m:
+                coords[attr] = int(m.group(1))
+        if len(coords) == 4 and coords["x2"] > coords["x1"] and coords["y2"] > coords["y1"]:
+            regions.append((coords["x1"], coords["y1"], coords["x2"], coords["y2"]))
+
+    if not regions:
+        logger.warning(f"[Planner] No regions parsed. Raw response: {raw[:300]}")
     return regions[:3]
 
 
