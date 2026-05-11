@@ -1,11 +1,12 @@
 """
 grounding.py — ScreenSeekeR Visual Grounding Engine
 
-Implements the recursive search algorithm from arXiv:2504.07981 (ScreenSeekeR).
-This includes Planner/Grounder architecture, Box Dilation, Gaussian Centrality Scoring,
-and Non-Maximum Suppression to bypass visual obstructions.
+Implements the recursive Planner/Grounder search algorithm
+from arXiv:2504.07981 with Box Dilation, Gaussian Centrality
+Scoring, and Non-Maximum Suppression.
 """
 
+import io
 import os
 import re
 import json
@@ -15,92 +16,100 @@ from typing import List, Optional, Tuple
 
 from PIL import ImageGrab, Image, ImageDraw, ImageFont
 from google import genai
+from google.genai import types
 
 from utils import logger, retry
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 MODEL     = "gemini-3.1-flash-lite"
-MAX_DEPTH = 2
-MIN_SIZE  = 1280                       # px — switch to direct grounding below this
+MAX_DEPTH = 2                          # maximum recursive zoom levels
+MIN_SIZE  = 1280                       # switch to direct grounding below this (px)
 NMS_IOU   = 0.5                        # IoU threshold for non-maximum suppression
-SIGMA     = 0.3                        # Gaussian width
-MAX_VLM   = 1024                       # downscale longest side before sending to API
-DILATE_PX = 100                        # official dilation to prevent edge-cutoff
-TEMP_DIR  = "temp"                     # folder for intermediate debug images
-SAVE_DEBUG = True                      # set True to save intermediate images to temp/
+SIGMA     = 0.3                        # Gaussian centrality width (Eq. 1)
+MAX_VLM   = 768                        # downscale longest side to reduce token usage
+DILATE_PX = 100                        # box dilation to prevent edge-cutoff
+TEMP_DIR  = "temp"                     # debug image output folder
+SAVE_DEBUG = True
 
-# ─── Prompts ───────────────────────────────────────────────────────────────────
+# ─── Prompts (ScreenSeekeR Planner / Grounder) ────────────────────────────────
 PLANNER_PROMPT = """\
 You are a GUI understanding agent on Windows.
 Identify up to 3 screen regions where "{target}" is most likely located.
 
-Output ONLY XML area tags with coordinates in [0, 1000] space
-(0=top-left corner, 1000=bottom-right corner):
-<area x1="..." y1="..." x2="..." y2="...">description</area>
+Return ONLY a JSON array of objects with coordinates in [0, 1000] space:
+[{{"x1": <int>, "y1": <int>, "x2": <int>, "y2": <int>, "label": "<description>"}}]
 
-List regions from most likely to least likely. No other text.
+0 = top-left corner, 1000 = bottom-right corner.
+Order regions from most likely to least likely. No other text.
 """
 
 GROUNDER_PROMPT = """\
 Find the exact centre of "{target}" in this image.
-Output ONLY valid JSON — no markdown:
-{{"x": <0-1000>, "y": <0-1000>, "confidence": <0.0-1.0>}}
+Return ONLY a JSON object with coordinates in [0, 1000] space:
+{{"x": <int>, "y": <int>, "confidence": <float 0.0-1.0>}}
 
-Coordinates are in [0, 1000] normalised space within this image.
-If the target is not visible output: {{"x": 0, "y": 0, "confidence": 0.0}}
+If the target is not visible: {{"x": 0, "y": 0, "confidence": 0.0}}
 """
 
 
-# ─── Helper functions ──────────────────────────────────────────────────────────
+# ─── Helpers ───────────────────────────────────────────────────────────────────
 
 def _save_debug(img: Image.Image, name: str):
-    """Save an intermediate image to the temp directory (if SAVE_DEBUG is on)."""
+    """Save debug image to temp/ folder."""
     if not SAVE_DEBUG:
         return
     os.makedirs(TEMP_DIR, exist_ok=True)
     path = os.path.join(TEMP_DIR, f"{name}.png")
     img.save(path)
-    logger.debug(f"Saved debug image: {path}")
 
-def _downscale(img: Image.Image) -> Tuple[Image.Image, float]:
-    """Resize image so its longest side ≤ MAX_VLM pixels."""
+
+def _to_jpeg(img: Image.Image) -> types.Part:
+    """Compress and convert PIL image to JPEG bytes for faster API upload."""
+    # Downscale if needed
     longest = max(img.size)
-    if longest <= MAX_VLM:
-        return img, 1.0
-    scale = MAX_VLM / longest
-    return img.resize(
-        (int(img.width * scale), int(img.height * scale)),
-        Image.Resampling.LANCZOS,
-    ), scale
+    if longest > MAX_VLM:
+        scale = MAX_VLM / longest
+        img = img.resize(
+            (int(img.width * scale), int(img.height * scale)),
+            Image.Resampling.LANCZOS,
+        )
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=75)
+    return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
 
 def _parse_json(text: str) -> dict:
-    """Extract the first JSON object from a model response string."""
+    """Extract the first JSON object from a model response."""
     text = re.sub(r"^```[a-z]*\n?", "", text.strip(), flags=re.IGNORECASE)
     text = re.sub(r"```$", "", text).strip()
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
-        raise ValueError(f"No JSON found in response: {text[:200]}")
+        raise ValueError(f"No JSON found in: {text[:200]}")
     return json.loads(match.group())
 
 
-def _gaussian_score(
-    cx: float, cy: float,
-    x1: float, y1: float, x2: float, y2: float,
-) -> float:
-    """
-    Centrality-based Gaussian score (Equation 1 from ScreenSeekeR paper).
+def _parse_json_array(text: str) -> list:
+    """Extract the first JSON array from a model response."""
+    text = re.sub(r"^```[a-z]*\n?", "", text.strip(), flags=re.IGNORECASE)
+    text = re.sub(r"```$", "", text).strip()
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if not match:
+        return []
+    try:
+        return json.loads(match.group())
+    except json.JSONDecodeError:
+        return []
 
-    Returns a value in (0, 1] — higher when the predicted click-point
-    is closer to the centre of the candidate bounding box.
-    """
+
+def _gaussian_score(cx, cy, x1, y1, x2, y2) -> float:
+    """Centrality-based Gaussian score (Equation 1 from ScreenSeekeR)."""
     xn = (cx - x1) / max(x2 - x1, 1)
     yn = (cy - y1) / max(y2 - y1, 1)
     return math.exp(-((xn - 0.5) ** 2 + (yn - 0.5) ** 2) / (2 * SIGMA ** 2))
 
 
 def _iou(a: Tuple, b: Tuple) -> float:
-    """Compute Intersection-over-Union for two (x1, y1, x2, y2) boxes."""
+    """Intersection-over-Union for two (x1, y1, x2, y2) boxes."""
     ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
     ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
     inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
@@ -112,11 +121,7 @@ def _iou(a: Tuple, b: Tuple) -> float:
 
 
 def _nms(items: list) -> list:
-    """
-    Non-Maximum Suppression: keep highest-scored candidates and discard
-    any lower-scored candidate whose IoU with a kept candidate exceeds
-    the NMS_IOU threshold.
-    """
+    """Non-Maximum Suppression: discard overlapping lower-scored candidates."""
     items = sorted(items, key=lambda x: x[0], reverse=True)
     kept = []
     for candidate in items:
@@ -125,74 +130,67 @@ def _nms(items: list) -> list:
     return kept
 
 
-# ─── VLM API calls ─────────────────────────────────────────────────────────────
+# ─── VLM API Calls ─────────────────────────────────────────────────────────────
 
 @retry(max_attempts=3, delay=1.0)
-def _call_planner(
-    target: str, img: Image.Image, client: genai.Client,
-) -> List[Tuple]:
-    """
-    Planner step: Identifies likely regions for the target.
-    Returns up to 3 bounding boxes as (x1, y1, x2, y2) in [0, 1000] space.
-    """
-    small, _ = _downscale(img)
+def _call_planner(target: str, img: Image.Image, client: genai.Client) -> List[Tuple]:
+    """Planner: returns up to 3 candidate regions as (x1, y1, x2, y2)."""
+    image_part = _to_jpeg(img)
     prompt = PLANNER_PROMPT.format(target=target)
     response = client.models.generate_content(
-        model=MODEL, contents=[prompt, small], config={"temperature": 0.0},
+        model=MODEL,
+        contents=[prompt, image_part],
+        config=types.GenerateContentConfig(
+            temperature=0.0,
+            response_mime_type="application/json",
+        ),
     )
-    raw = response.text
 
-    # Parse <area> tags — tolerates any attribute order or quote style
+    items = _parse_json_array(response.text)
     regions = []
-    for tag in re.findall(r'<area[^>]+>', raw, re.IGNORECASE):
-        coords = {}
-        for attr in ("x1", "y1", "x2", "y2"):
-            m = re.search(rf'{attr}=["\']?(\d+)', tag, re.IGNORECASE)
-            if m:
-                coords[attr] = int(m.group(1))
-        if len(coords) == 4 and coords["x2"] > coords["x1"] and coords["y2"] > coords["y1"]:
-            regions.append((coords["x1"], coords["y1"], coords["x2"], coords["y2"]))
+    for item in items:
+        x1 = int(item.get("x1", 0))
+        y1 = int(item.get("y1", 0))
+        x2 = int(item.get("x2", 0))
+        y2 = int(item.get("y2", 0))
+        if x2 > x1 and y2 > y1:
+            regions.append((x1, y1, x2, y2))
 
     if not regions:
-        logger.warning(f"[Planner] No regions parsed. Raw response: {raw[:300]}")
+        logger.warning(f"[Planner] No valid regions returned.")
     return regions[:3]
 
 
 @retry(max_attempts=3, delay=1.0)
-def _call_grounder(
-    target: str, img: Image.Image, client: genai.Client,
-) -> dict:
-    """
-    Grounder step: Finds exact click-point inside the image crop.
-    Returns {"x": int, "y": int, "confidence": float} in [0, 1000] space.
-    """
-    small, _ = _downscale(img)
+def _call_grounder(target: str, img: Image.Image, client: genai.Client) -> dict:
+    """Grounder: returns {x, y, confidence} for exact click-point."""
+    image_part = _to_jpeg(img)
     prompt = GROUNDER_PROMPT.format(target=target)
     response = client.models.generate_content(
-        model=MODEL, contents=[prompt, small], config={"temperature": 0.0},
+        model=MODEL,
+        contents=[prompt, image_part],
+        config=types.GenerateContentConfig(
+            temperature=0.0,
+            response_mime_type="application/json",
+        ),
     )
     return _parse_json(response.text)
 
 
-# ─── Core recursive search (Algorithm 1) ──────────────────────────────────────
+# ─── Core Recursive Search (Algorithm 1) ──────────────────────────────────────
 
 def _visual_search(
     target: str,
     image: Image.Image,
     client: genai.Client,
     depth: int = 0,
-    offset_x: int = 0,        # pixel offset of this crop within the full screenshot
+    offset_x: int = 0,
     offset_y: int = 0,
 ) -> Optional[Tuple[int, int, float]]:
-    """
-    Recursive ScreenSeekeR search.
-
-    Returns:
-        Tuple of (global_x, global_y, confidence) if found, else None.
-    """
+    """Recursive ScreenSeekeR search. Returns (x, y, confidence) or None."""
     W, H = image.size
 
-    # ── Base case: patch is small enough for direct grounding ──────────────
+    # Base case: image is small enough or max depth reached
     if depth >= MAX_DEPTH or max(W, H) <= MIN_SIZE:
         _save_debug(image, f"seek_d{depth}_final")
         logger.info(f"[depth={depth}] Direct grounding on {W}×{H} patch…")
@@ -205,24 +203,26 @@ def _visual_search(
             return (gx, gy, conf)
         return None
 
+    # Planner step: identify candidate regions
     _save_debug(image, f"seek_d{depth}_full")
     regions = _call_planner(target, image, client)
 
     if not regions:
-        logger.warning(f"[depth={depth}] Planner returned no regions → direct grounding.")
+        logger.warning(f"[depth={depth}] No regions found → direct grounding.")
         return _visual_search(target, image, client, MAX_DEPTH, offset_x, offset_y)
 
     logger.info(f"[depth={depth}] {len(regions)} candidate region(s) found.")
 
+    # Evaluate each region with Grounder + Gaussian scoring
     scored: list = []
 
-    def _evaluate_region(i: int, rx1: int, ry1: int, rx2: int, ry2: int):
-        """Score a single candidate region (runs inside a thread)."""
-        # Convert normalised [0,1000] → pixel coordinates
+    def _evaluate_region(i, rx1, ry1, rx2, ry2):
+        """Score a single candidate region."""
+        # Normalised [0,1000] → pixel coordinates
         px1, py1 = int(rx1 / 1000 * W), int(ry1 / 1000 * H)
         px2, py2 = int(rx2 / 1000 * W), int(ry2 / 1000 * H)
-        
-        # Apply Box Dilation (Official ScreenSeekeR Step)
+
+        # Box Dilation (ScreenSeekeR paper)
         px1, py1 = max(0, px1 - DILATE_PX), max(0, py1 - DILATE_PX)
         px2, py2 = min(W, px2 + DILATE_PX), min(H, py2 + DILATE_PX)
         px2, py2 = max(px2, px1 + 10), max(py2, py1 + 10)
@@ -234,19 +234,18 @@ def _visual_search(
         gr = _call_grounder(target, crop, client)
         conf = gr.get("confidence", 0.0)
 
-        # Map the grounder's local point back into this image's pixel space
+        # Map local coordinates back to parent image space
         gcx = px1 + int(gr["x"] / 1000 * cW)
         gcy = py1 + int(gr["y"] / 1000 * cH)
 
+        # Gaussian Centrality Score (Eq. 1)
         g_score = _gaussian_score(gcx, gcy, px1, py1, px2, py2)
         total = g_score * conf
         return i, total, (px1, py1, px2, py2), conf, g_score
 
+    # Evaluate regions concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        futures = [
-            pool.submit(_evaluate_region, i, *r)
-            for i, r in enumerate(regions)
-        ]
+        futures = [pool.submit(_evaluate_region, i, *r) for i, r in enumerate(regions)]
         for future in concurrent.futures.as_completed(futures):
             i, total, box, conf, g_score = future.result()
             scored.append((total, box))
@@ -255,11 +254,12 @@ def _visual_search(
                 f"score={total:.3f}  conf={conf:.2f}  gauss={g_score:.3f}"
             )
 
+    # NMS: keep the best non-overlapping candidates
     ranked = _nms(scored)
 
+    # Recurse into top-ranked regions
     for _, (px1, py1, px2, py2) in ranked:
         crop = image.crop((px1, py1, px2, py2))
-
         result = _visual_search(
             target, crop, client,
             depth=depth + 1,
@@ -280,15 +280,15 @@ def locate_icon(
     save_annotated_path: Optional[str] = None,
 ) -> Tuple[int, int]:
     """
-    Locates an icon or UI element using the ScreenSeekeR algorithm.
+    Locate a UI element on screen using the ScreenSeekeR algorithm.
 
     Args:
-        target: Natural-language description of the target.
-        screenshot: Pre-captured PIL Image. Takes a fresh screenshot if None.
-        save_annotated_path: Optional path to save an annotated debug image.
+        target: Natural-language description of the element.
+        screenshot: Optional pre-captured image. Captures fresh if None.
+        save_annotated_path: Optional path to save a debug image with crosshair.
 
     Returns:
-        (x, y) absolute screen pixel coordinates.
+        (x, y) absolute screen coordinates.
 
     Raises:
         ValueError: If the element could not be found.
@@ -309,10 +309,10 @@ def locate_icon(
     x, y, conf = result
     logger.info(f"✓ Located '{target}' at ({x}, {y}) with confidence {conf:.2f}.")
 
+    # Draw annotated crosshair for diagnostics
     if save_annotated_path:
         draw = ImageDraw.Draw(screenshot)
         r = 25
-        # Draw red crosshair
         draw.ellipse((x - r, y - r, x + r, y + r), outline="red", width=4)
         draw.line((x - r - 15, y, x + r + 15, y), fill="red", width=3)
         draw.line((x, y - r - 15, x, y + r + 15), fill="red", width=3)
@@ -322,19 +322,15 @@ def locate_icon(
         except Exception:
             font = ImageFont.load_default()
 
-        # Draw text with a black outline for high visibility
         text = f"Conf: {conf:.2f}"
-        
         try:
             bbox = draw.textbbox((0, 0), text, font=font)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
+            text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
         except AttributeError:
             text_w, text_h = 120, 30
-            
+
         text_x = x - (text_w / 2)
         text_y = y - r - text_h - 15
-
         for adj in [(-2, -2), (2, -2), (-2, 2), (2, 2)]:
             draw.text((text_x + adj[0], text_y + adj[1]), text, fill="black", font=font)
         draw.text((text_x, text_y), text, fill="lime", font=font)
