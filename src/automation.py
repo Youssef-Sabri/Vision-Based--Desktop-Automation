@@ -22,7 +22,7 @@ NOTEPAD_TARGET = (
 )
 
 # Cache to skip AI inference if icon hasn't moved
-_CACHED_ICON_POS  = None
+_CACHED_ICON_POS = None
 _CACHED_ICON_CROP = None
 
 
@@ -53,8 +53,10 @@ def launch_notepad() -> gw.Window:
     if _CACHED_ICON_POS is not None and _CACHED_ICON_CROP is not None:
         cx, cy = _CACHED_ICON_POS
         box = (
-            max(0, cx - 25), max(0, cy - 25),
-            min(screenshot.width, cx + 25), min(screenshot.height, cy + 25),
+            max(0, cx - 25),
+            max(0, cy - 25),
+            min(screenshot.width, cx + 25),
+            min(screenshot.height, cy + 25),
         )
         current_crop = screenshot.crop(box)
 
@@ -64,9 +66,7 @@ def launch_notepad() -> gw.Window:
         mean_diff = sum(stat.mean) / len(stat.mean)
 
         if mean_diff < 5.0:  # tolerance for minor rendering noise
-            logger.info(
-                f"Cache hit — icon unchanged at ({cx}, {cy}). Bypassing VLM."
-            )
+            logger.info(f"Cache hit — icon unchanged at ({cx}, {cy}). Bypassing VLM.")
             x, y = cx, cy
         else:
             logger.info("Cache miss — icon moved or obscured. Running ScreenSeekeR.")
@@ -83,8 +83,10 @@ def launch_notepad() -> gw.Window:
         # Save crop to cache for next iteration
         _CACHED_ICON_POS = (x, y)
         box = (
-            max(0, x - 25), max(0, y - 25),
-            min(screenshot.width, x + 25), min(screenshot.height, y + 25),
+            max(0, x - 25),
+            max(0, y - 25),
+            min(screenshot.width, x + 25),
+            min(screenshot.height, y + 25),
         )
         _CACHED_ICON_CROP = screenshot.crop(box)
 
@@ -115,7 +117,9 @@ def launch_notepad() -> gw.Window:
 
 
 def write_and_save(
-    post: Dict[str, Any], target_dir: str, window: gw.Window,
+    post: Dict[str, Any],
+    target_dir: str,
+    window: gw.Window,
 ) -> None:
     """Types content into active Notepad window and saves file."""
     post_id = post.get("id", "unknown")

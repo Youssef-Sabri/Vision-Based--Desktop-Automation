@@ -38,6 +38,7 @@ def retry(max_attempts: int = 3, delay: float = 1.0) -> Callable:
         max_attempts: Maximum number of execution attempts.
         delay: Seconds to wait between attempts.
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -54,5 +55,7 @@ def retry(max_attempts: int = 3, delay: float = 1.0) -> Callable:
                     if attempt < max_attempts:
                         time.sleep(delay)
             raise last_exc  # type: ignore[misc]
+
         return wrapper
+
     return decorator

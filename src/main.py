@@ -22,7 +22,8 @@ def main() -> None:
     logger.info("=== Vision-Based Desktop Automation ===")
     logger.info("Press Esc at any time to stop.")
     keyboard.add_hotkey(
-        "esc", lambda: (logger.info("Stopped by user."), os._exit(0)),
+        "esc",
+        lambda: (logger.info("Stopped by user."), os._exit(0)),
     )
 
     # Fetch posts
@@ -59,7 +60,9 @@ def main() -> None:
             logger.error(f"Post {post_id} failed: {exc}. Continuing…")
 
         if TEST_DELAY_SECONDS > 0 and i < len(posts):
-            logger.info(f"⏳ Waiting {TEST_DELAY_SECONDS}s… (move the Notepad icon to test AI recovery)")
+            logger.info(
+                f"⏳ Waiting {TEST_DELAY_SECONDS}s… (move the Notepad icon to test AI recovery)"
+            )
             time.sleep(TEST_DELAY_SECONDS)
 
     logger.info(f"Done. {success}/{len(posts)} posts saved to {target_dir}")

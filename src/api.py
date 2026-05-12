@@ -27,8 +27,11 @@ def fetch_posts(limit: int = 10) -> List[Dict[str, Any]]:
     """
     # Configure endpoints and their respective limit parameters
     endpoints = [
-        ("JSONPlaceholder", f"https://jsonplaceholder.typicode.com/posts?_limit={limit}"),
-        ("DummyJSON",       f"https://dummyjson.com/posts?limit={limit}"),
+        (
+            "JSONPlaceholder",
+            f"https://jsonplaceholder.typicode.com/posts?_limit={limit}",
+        ),
+        ("DummyJSON", f"https://dummyjson.com/posts?limit={limit}"),
     ]
 
     for name, url in endpoints:

@@ -21,14 +21,14 @@ from google.genai import types
 from utils import logger, retry
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-MODEL     = "gemini-3.1-flash-lite"
-MAX_DEPTH = 2                          # maximum recursive zoom levels
-MIN_SIZE  = 1280                       # switch to direct grounding below this (px)
-NMS_IOU   = 0.5                        # IoU threshold for non-maximum suppression
-SIGMA     = 0.3                        # Gaussian centrality width (Eq. 1)
-MAX_VLM   = 768                        # downscale longest side to reduce token usage
-DILATE_PX = 100                        # box dilation to prevent edge-cutoff
-TEMP_DIR  = "temp"                     # debug image output folder
+MODEL = "gemini-3.1-flash-lite"
+MAX_DEPTH = 2  # maximum recursive zoom levels
+MIN_SIZE = 1280  # switch to direct grounding below this (px)
+NMS_IOU = 0.5  # IoU threshold for non-maximum suppression
+SIGMA = 0.3  # Gaussian centrality width (Eq. 1)
+MAX_VLM = 768  # downscale longest side to reduce token usage
+DILATE_PX = 100  # box dilation to prevent edge-cutoff
+TEMP_DIR = "temp"  # debug image output folder
 SAVE_DEBUG = True
 
 # ─── Prompts (ScreenSeekeR Planner / Grounder) ────────────────────────────────
@@ -36,8 +36,10 @@ PLANNER_PROMPT = """\
 You are a GUI understanding agent on Windows.
 Identify up to 3 screen regions where "{target}" is most likely located.
 
+CRITICAL: You must use Position Inference. Leverage common GUI knowledge to infer possible neighboring UI elements in proximity to the target (e.g., a "new" button typically appears near a "delete" button).
+
 Return ONLY a JSON array of objects with coordinates in [0, 1000] space:
-[{{"x1": <int>, "y1": <int>, "x2": <int>, "y2": <int>, "label": "<description>"}}]
+[{{"x1": <int>, "y1": <int>, "x2": <int>, "y2": <int>, "label": "<description>", "reasoning": "<explain neighboring elements>"}}]
 
 0 = top-left corner, 1000 = bottom-right corner.
 Order regions from most likely to least likely. No other text.
@@ -53,6 +55,7 @@ If the target is not visible: {{"x": 0, "y": 0, "confidence": 0.0}}
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _save_debug(img: Image.Image, name: str):
     """Save debug image to temp/ folder."""
@@ -78,34 +81,28 @@ def _to_jpeg(img: Image.Image) -> types.Part:
     return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
 
-def _parse_json(text: str) -> dict:
-    """Extract the first JSON object from a model response."""
+def _extract_json(text: str, default=None):
+    """Extract the first JSON object or array from a model response."""
     text = re.sub(r"^```[a-z]*\n?", "", text.strip(), flags=re.IGNORECASE)
     text = re.sub(r"```$", "", text).strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
     if not match:
+        if default is not None:
+            return default
         raise ValueError(f"No JSON found in: {text[:200]}")
-    return json.loads(match.group())
-
-
-def _parse_json_array(text: str) -> list:
-    """Extract the first JSON array from a model response."""
-    text = re.sub(r"^```[a-z]*\n?", "", text.strip(), flags=re.IGNORECASE)
-    text = re.sub(r"```$", "", text).strip()
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if not match:
-        return []
     try:
         return json.loads(match.group())
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        if default is not None:
+            return default
+        raise ValueError(f"Failed to parse JSON: {e}")
 
 
 def _gaussian_score(cx, cy, x1, y1, x2, y2) -> float:
     """Centrality-based Gaussian score (Equation 1 from ScreenSeekeR)."""
     xn = (cx - x1) / max(x2 - x1, 1)
     yn = (cy - y1) / max(y2 - y1, 1)
-    return math.exp(-((xn - 0.5) ** 2 + (yn - 0.5) ** 2) / (2 * SIGMA ** 2))
+    return math.exp(-((xn - 0.5) ** 2 + (yn - 0.5) ** 2) / (2 * SIGMA**2))
 
 
 def _iou(a: Tuple, b: Tuple) -> float:
@@ -132,6 +129,7 @@ def _nms(items: list) -> list:
 
 # ─── VLM API Calls ─────────────────────────────────────────────────────────────
 
+
 @retry(max_attempts=3, delay=1.0)
 def _call_planner(target: str, img: Image.Image, client: genai.Client) -> List[Tuple]:
     """Planner: returns up to 3 candidate regions as (x1, y1, x2, y2)."""
@@ -146,7 +144,9 @@ def _call_planner(target: str, img: Image.Image, client: genai.Client) -> List[T
         ),
     )
 
-    items = _parse_json_array(response.text)
+    items = _extract_json(response.text, default=[])
+    if isinstance(items, dict):
+        items = [items]
     regions = []
     for item in items:
         x1 = int(item.get("x1", 0))
@@ -157,7 +157,7 @@ def _call_planner(target: str, img: Image.Image, client: genai.Client) -> List[T
             regions.append((x1, y1, x2, y2))
 
     if not regions:
-        logger.warning(f"[Planner] No valid regions returned.")
+        logger.warning("[Planner] No valid regions returned.")
     return regions[:3]
 
 
@@ -174,10 +174,11 @@ def _call_grounder(target: str, img: Image.Image, client: genai.Client) -> dict:
             response_mime_type="application/json",
         ),
     )
-    return _parse_json(response.text)
+    return _extract_json(response.text)
 
 
 # ─── Core Recursive Search (Algorithm 1) ──────────────────────────────────────
+
 
 def _visual_search(
     target: str,
@@ -250,7 +251,7 @@ def _visual_search(
             i, total, box, conf, g_score = future.result()
             scored.append((total, box))
             logger.info(
-                f"[depth={depth}] Region {i+1}: "
+                f"[depth={depth}] Region {i + 1}: "
                 f"score={total:.3f}  conf={conf:.2f}  gauss={g_score:.3f}"
             )
 
@@ -261,7 +262,9 @@ def _visual_search(
     for _, (px1, py1, px2, py2) in ranked:
         crop = image.crop((px1, py1, px2, py2))
         result = _visual_search(
-            target, crop, client,
+            target,
+            crop,
+            client,
             depth=depth + 1,
             offset_x=offset_x + px1,
             offset_y=offset_y + py1,
@@ -273,6 +276,7 @@ def _visual_search(
 
 
 # ─── Public API ────────────────────────────────────────────────────────────────
+
 
 def locate_icon(
     target: str,
@@ -335,7 +339,9 @@ def locate_icon(
             draw.text((text_x + adj[0], text_y + adj[1]), text, fill="black", font=font)
         draw.text((text_x, text_y), text, fill="lime", font=font)
 
-        os.makedirs(os.path.dirname(os.path.abspath(save_annotated_path)), exist_ok=True)
+        os.makedirs(
+            os.path.dirname(os.path.abspath(save_annotated_path)), exist_ok=True
+        )
         screenshot.save(save_annotated_path)
 
     return (x, y)
